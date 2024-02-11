@@ -153,6 +153,7 @@ static uint8_t nile_tf_read_response_r1b(void) {
 
 static uint8_t nile_tf_command(uint8_t cmd, uint32_t arg, uint8_t crc, uint8_t *recv_buffer, uint16_t size) {
 	uint8_t cmd_buffer[6];
+	recv_buffer[0] = 0xFF;
 
 	if (cmd & 0x80) {
 		uint8_t resp = nile_tf_command(TFC_APP_PREFIX, 0x95, 0, recv_buffer, 1);
@@ -187,6 +188,8 @@ DSTATUS disk_status(BYTE pdrv) {
 DSTATUS disk_initialize(BYTE pdrv) {
 	uint8_t retries;
 	uint8_t buffer[8];
+
+	if (nile_ipl_data->card_state != 0) return 0;
 
 	nile_ipl_data->card_state = 0;
 	nile_spi_timeout_ms = 1000;
@@ -416,7 +419,7 @@ DRESULT disk_write (BYTE pdrv, const BYTE __far* buff, LBA_t sector, UINT count)
 			set_detail_code(0x21);
 			goto disk_read_stop;
 		}
-		if (!nile_spi_tx(buff, 512)) {`
+		if (!nile_spi_tx(buff, 512)) {
 			set_detail_code(0x22);
 			goto disk_read_stop;
 		}
