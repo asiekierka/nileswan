@@ -109,12 +109,12 @@ static uint8_t tfc_wait_until_ready(uint8_t resp) {
 	uint16_t timeout = 0;
 #ifdef __OPTIMIZE_SIZE__
 	// smaller but slower code variant
-	uint16_t resp_busy[1];
+	uint8_t resp_busy[1];
 	while (--timeout) {
-		// wait for 0xFFFF to signify end of busy time
-		if (!nile_spi_rx_copy(&resp_busy, 2, NILE_SPI_MODE_READ))
+		// wait for 0xFF to signify end of busy time
+		if (!nile_spi_rx_copy(&resp_busy, 1, NILE_SPI_MODE_READ))
 			return 0xFF;
-		if (resp_busy[0] == 0xFFFF)
+		if (resp_busy[0] == 0xFF)
 			break;
 	}
 
@@ -184,12 +184,12 @@ static uint8_t tfc_read_response_r1b(void) {
 
 static uint8_t tfc_read_response(uint8_t *buffer, uint16_t size) {
 	buffer[0] = 0xFF;
-	nile_spi_rx_copy(buffer, size + 2, NILE_SPI_MODE_WAIT_READ);
+	nile_spi_rx_copy(buffer, size + 1, NILE_SPI_MODE_WAIT_READ);
 	return buffer[0];
 }
 
 static bool tfc_send_cmd(uint8_t cmd, uint8_t crc, uint32_t arg) {
-	uint8_t buffer[6 + 6];
+	uint8_t buffer[6];
 
 	if (cmd & 0x80) {
 		if (!tfc_send_cmd(TFC_APP_PREFIX, 0x95, 0)) {
@@ -200,19 +200,17 @@ static bool tfc_send_cmd(uint8_t cmd, uint8_t crc, uint32_t arg) {
 		}
 	}
 
-	_nmemset(buffer, 0xFF, 6);
-
 	if (!tfc_cs_high())
 		return false;
 	if (!tfc_cs_low())
 		return false;
 
-	buffer[6] = cmd & 0x7F;
-	buffer[7] = arg >> 24;
-	buffer[8] = arg >> 16;
-	buffer[9] = arg >> 8;
-	buffer[10] = arg;
-	buffer[11] = crc;
+	buffer[0] = cmd & 0x7F;
+	buffer[1] = arg >> 24;
+	buffer[2] = arg >> 16;
+	buffer[3] = arg >> 8;
+	buffer[4] = arg;
+	buffer[5] = crc;
 	return nile_spi_tx(buffer, sizeof(buffer));
 }
 
