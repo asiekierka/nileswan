@@ -358,7 +358,7 @@ disk_read_stop:
 		if (!nile_spi_rx(2, NILE_SPI_MODE_READ))
 			goto disk_read_end;
 		buff += 512;
-		sector += card_hc ? 1 : 512;
+		sector += (nile_ipl_data->card_state & NILE_CARD_BLOCK_ADDRESSING) ? 1 : 512;
 		count--;
 	}
 #endif
@@ -424,7 +424,7 @@ disk_read_stop:
 			goto disk_read_end;
 		// TODO: error handling?
 		buff += 512;
-		sector += 512;
+		sector += (nile_ipl_data->card_state & NILE_CARD_BLOCK_ADDRESSING) ? 1 : 512;
 		count--;
 	}
 #endif
