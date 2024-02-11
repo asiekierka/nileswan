@@ -104,20 +104,17 @@ uint8_t diskio_detail_code;
 #define set_detail_code(v)
 #endif
 
-static uint8_t card_status = STA_NOINIT;
-static bool card_hc = false;
-
 /* Wait until the TF card is finished (responds 0xFF...) */
 static uint8_t tfc_wait_until_ready(uint8_t resp) {
 	uint16_t timeout = 0;
 #ifdef __OPTIMIZE_SIZE__
 	// smaller but slower code variant
-	uint16_t resp_busy[24];
+	uint16_t resp_busy[1];
 	while (--timeout) {
 		// wait for 0xFFFF to signify end of busy time
-		if (!nile_spi_rx_copy(&resp_busy, 48, NILE_SPI_MODE_READ))
+		if (!nile_spi_rx_copy(&resp_busy, 2, NILE_SPI_MODE_READ))
 			return 0xFF;
-		if (resp_busy[23] == 0xFFFF)
+		if (resp_busy[0] == 0xFFFF)
 			break;
 	}
 
@@ -157,6 +154,8 @@ static uint8_t tfc_wait_until_ready(uint8_t resp) {
 }
 
 static bool tfc_cs_high(void) {
+	if (!nile_spi_wait_busy())
+		return false;
 	outportw(IO_NILE_SPI_CNT, inportw(IO_NILE_SPI_CNT) & ~NILE_SPI_CS);
 	if (!nile_spi_rx(1, NILE_SPI_MODE_READ))
 		return false;
@@ -164,9 +163,11 @@ static bool tfc_cs_high(void) {
 }
 
 static bool tfc_cs_low(void) {
-	outportw(IO_NILE_SPI_CNT, inportw(IO_NILE_SPI_CNT) | NILE_SPI_CS);
-	if (!nile_spi_rx(1, NILE_SPI_MODE_READ))
+	if (!nile_spi_wait_busy())
 		return false;
+	outportw(IO_NILE_SPI_CNT, inportw(IO_NILE_SPI_CNT) | NILE_SPI_CS);
+	/* if (!nile_spi_rx(1, NILE_SPI_MODE_READ))
+		return false; */
 	if (tfc_wait_until_ready(0x00))
 		return false;
 	return true;
@@ -216,7 +217,7 @@ static bool tfc_send_cmd(uint8_t cmd, uint8_t crc, uint32_t arg) {
 }
 
 DSTATUS disk_status(BYTE pdrv) {
-	return card_status;
+	return nile_ipl_data->card_state == NILE_CARD_NOT_INITIALIZED ? STA_NOINIT : 0;
 }
 
 #define MAX_RETRIES 200
@@ -225,8 +226,7 @@ DSTATUS disk_initialize(BYTE pdrv) {
 	uint8_t retries;
 	uint8_t buffer[16];
 
-	card_hc = false;
-	card_status = STA_NOINIT;
+	nile_ipl_data->card_state = NILE_CARD_NOT_INITIALIZED;
 	nile_spi_timeout_ms = 1000;
 
 	set_detail_code(0);
@@ -246,7 +246,7 @@ DSTATUS disk_initialize(BYTE pdrv) {
 	nile_spi_rx(10, NILE_SPI_MODE_READ);
 
 	// Reset card
-	if (tfc_send_cmd(TFC_GO_IDLE_STATE, 0x95, 0) && tfc_read_response(buffer, 1) & ~TFC_R1_IDLE) {
+	if (!tfc_send_cmd(TFC_GO_IDLE_STATE, 0x95, 0) || tfc_read_response(buffer, 1) & ~TFC_R1_IDLE) {
 		// Error/No response
 		set_detail_code(1);
 		goto card_init_failed;
@@ -280,7 +280,7 @@ DSTATUS disk_initialize(BYTE pdrv) {
 				if (tfc_send_cmd(TFC_READ_OCR, 0x95, 0)) {
 					if (!tfc_read_response(buffer, 5)) {
 						if (buffer[1] & 0x40) {
-							card_hc = true;
+							nile_ipl_data->card_state = NILE_CARD_BLOCK_ADDRESSING;
 						}
 					}
 				}
@@ -289,7 +289,7 @@ DSTATUS disk_initialize(BYTE pdrv) {
 		} else {
 			// Voltage/pattern value mismatch
 			set_detail_code(2);
-			return card_status;
+			goto card_init_failed;
 		}
 	}
 
@@ -331,16 +331,16 @@ card_init_failed:
 	// Power off card
 	outportb(IO_NILE_POW_CNT, 0);
 	outportw(IO_NILE_SPI_CNT, 0);
-	return card_status;
+	return STA_NOINIT;
 
 card_init_complete:
 	nile_spi_timeout_ms = 250;
-	if (!card_hc) {
+	if (nile_ipl_data->card_state == NILE_CARD_NOT_INITIALIZED) {
 		// set block size to 512
 		if (tfc_send_cmd(TFC_SET_BLOCKLEN, 0x95, 512)) {
 			if (tfc_read_response(buffer, 1)) {
 				set_detail_code(4);
-				return card_status;
+				goto card_init_failed;
 			}
 		}
 	}
@@ -349,15 +349,15 @@ card_init_complete_hc:
 	outportb(IO_NILE_POW_CNT, powcnt | NILE_POW_CLOCK);
 	outportw(IO_NILE_SPI_CNT, NILE_SPI_DEV_TF | NILE_SPI_25MHZ | NILE_SPI_CS_HIGH);
 	tfc_cs_high();
-	card_status = 0;
-	return card_status;
+	nile_ipl_data->card_state = NILE_CARD_BYTE_ADDRESSING;
+	return 0;
 }
 
 DRESULT disk_read (BYTE pdrv, BYTE __far* buff, LBA_t sector, UINT count) {
 	uint8_t result = RES_ERROR;
 	uint8_t resp[16];
 
-	if (!card_hc)
+	if (nile_ipl_data->card_state == NILE_CARD_BYTE_ADDRESSING)
 		sector <<= 9;
 
 	tfc_cs_low();
@@ -430,7 +430,7 @@ DRESULT disk_write (BYTE pdrv, const BYTE __far* buff, LBA_t sector, UINT count)
 	uint8_t result = RES_ERROR;
 	uint8_t resp[16];
 
-	if (!card_hc)
+	if (nile_ipl_data->card_state == NILE_CARD_BYTE_ADDRESSING)
 		sector <<= 9;
 
 	tfc_cs_low();
