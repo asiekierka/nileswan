@@ -101,10 +101,10 @@ static uint8_t load_menu(void) {
 	progress_pos = 0;
 
 	while (bank <= PSRAM_MAX_BANK) {
-		update_progress();
-
 		outportw(IO_BANK_2003_RAM, bank);
 		if (offset < 0x8000) {
+			update_progress();
+
 			if ((result = f_read(&fp, MK_FP(0x1000, offset), 0x8000 - offset, NULL)) != FR_OK) {
 				return result;
 			}
