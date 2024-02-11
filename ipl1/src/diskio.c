@@ -146,8 +146,9 @@ DSTATUS disk_initialize(BYTE pdrv) {
 		// Power card on
 		powcnt |= NILE_POW_TF;
 		outportb(IO_NILE_POW_CNT, powcnt);
-		// Wait a few milliseconds
-		ws_busywait(5000);
+		// Wait 250 milliseconds
+		for (uint8_t i = 0; i < 5; i++)
+			ws_busywait(50000);
 	}
 
 	// Initialize: emit clocks with CS high
