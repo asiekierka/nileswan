@@ -71,6 +71,7 @@ DRESULT disk_ioctl (BYTE pdrv, BYTE cmd, void *buff) {
 // TF card-related defines
 
 #define TFC_CMD(n) (0x40 | (n))
+#define TFC_ACMD(n) (0xC0 | (n))
 #define TFC_GO_IDLE_STATE        TFC_CMD(0)
 #define TFC_SEND_OP_COND         TFC_CMD(1)
 #define TFC_SEND_IF_COND         TFC_CMD(8)
@@ -83,7 +84,7 @@ DRESULT disk_ioctl (BYTE pdrv, BYTE cmd, void *buff) {
 #define TFC_SET_BLOCK_COUNT      TFC_CMD(23)
 #define TFC_WRITE_BLOCK          TFC_CMD(24)
 #define TFC_WRITE_MULTIPLE_BLOCK TFC_CMD(25)
-#define TFC_APP_SEND_OP_COND     TFC_CMD(41)
+#define TFC_APP_SEND_OP_COND     TFC_ACMD(41)
 #define TFC_APP_PREFIX           TFC_CMD(55)
 #define TFC_READ_OCR             TFC_CMD(58)
 #define TFC_R1_IDLE        0x01
@@ -106,168 +107,15 @@ uint8_t diskio_detail_code;
 static uint8_t card_status = STA_NOINIT;
 static bool card_hc = false;
 
-static bool tfc_send_cmd(uint8_t cmd, uint8_t crc, uint32_t arg) {
-	uint8_t buffer[14];
-	_nmemset(buffer, 0xFF, 8);
-	buffer[8] = cmd;
-	buffer[9] = arg >> 24;
-	buffer[10] = arg >> 16;
-	buffer[11] = arg >> 8;
-	buffer[12] = arg;
-	buffer[13] = crc;
-	return nile_spi_tx(buffer, sizeof(buffer));
-}
-
-static uint8_t tfc_read_response(uint8_t *buffer, uint16_t size) {
-	buffer[0] = 0xFF;
-	nile_spi_rx(buffer, size + 8, NILE_SPI_MODE_WAIT_READ);
-	return buffer[0];
-}
-
-DSTATUS disk_status(BYTE pdrv) {
-	return card_status;
-}
-
-#define MAX_RETRIES 10
-
-DSTATUS disk_initialize(BYTE pdrv) {
-	uint8_t retries;
-	uint8_t buffer[16];
-
-	card_hc = false;
-	card_status = STA_NOINIT;
-
-	set_detail_code(0);
-	nile_spi_wait_busy();
-	outportw(IO_NILE_SPI_CNT, NILE_SPI_DEV_TF | NILE_SPI_390KHZ | NILE_SPI_CS_HIGH);
-
-	uint8_t powcnt = inportb(IO_NILE_POW_CNT);
-	if (!(powcnt & NILE_POW_TF)) {
-		// Power card on
-		powcnt |= NILE_POW_TF;
-		outportb(IO_NILE_POW_CNT, powcnt);
-		// Wait 250 milliseconds
-		for (uint8_t i = 0; i < 5; i++)
-			ws_busywait(50000);
-	}
-
-	// Initialize: emit clocks with CS high
-	nile_spi_rx(buffer, 10, NILE_SPI_MODE_READ);
-	outportw(IO_NILE_SPI_CNT, NILE_SPI_DEV_TF | NILE_SPI_390KHZ | NILE_SPI_CS_LOW);
-
-	// Reset card
-	tfc_send_cmd(TFC_GO_IDLE_STATE, 0x95, 0);
-	if (tfc_read_response(buffer, 1) & ~TFC_R1_IDLE) {
-		// Error/No response
-		set_detail_code(1);
-		goto card_init_failed;
-	}
-
-	// Query interface configuration
-	tfc_send_cmd(TFC_SEND_IF_COND, 0x87, 0x000001AA);
-	if (!(tfc_read_response(buffer, 5) & ~TFC_R1_IDLE)) {
-		// Check voltage/pattern value match
-		if ((buffer[3] & 0xF) == 0x1 && buffer[4] == 0xAA) {
-			// Attempt high-capacity card init
-			retries = MAX_RETRIES ^ 0xFF;
-			while (++retries) {
-				tfc_send_cmd(TFC_APP_PREFIX, 0x95, 0);
-				if (!(tfc_read_response(buffer, 1) & ~TFC_R1_IDLE)) {
-					tfc_send_cmd(TFC_APP_SEND_OP_COND, 0x95, 1UL << 30);
-					uint8_t init_response = tfc_read_response(buffer, 1);
-					if (init_response & ~TFC_R1_IDLE) {
-						// Initialization error
-						retries = 0;
-						break;
-					} else if (!init_response) {
-						// Initialization success
-						break;
-					}
-					// Card still idle, try again
-				}
-			}
-
-			// Card init successful?
-			if (retries) {
-				// Read OCR to check for HC card
-				tfc_send_cmd(TFC_READ_OCR, 0x95, 0);
-				if (!tfc_read_response(buffer, 5)) {
-					if (buffer[1] & 0x40) {
-						card_hc = true;
-					}
-				}
-				goto card_init_complete_hc;
-			}
-		} else {
-			// Voltage/pattern value mismatch
-			set_detail_code(2);
-			return card_status;
-		}
-	}
-
-	// Attempt card init
-	retries = MAX_RETRIES ^ 0xFF;
-	while (++retries) {
-		tfc_send_cmd(TFC_APP_PREFIX, 0x95, 0);
-		if (!(tfc_read_response(buffer, 1) & ~TFC_R1_IDLE)) {
-			tfc_send_cmd(TFC_APP_SEND_OP_COND, 0x95, 0);
-			uint8_t init_response = tfc_read_response(buffer, 1);
-			if (init_response & ~TFC_R1_IDLE) {
-				// Initialization error
-				retries = 0;
-				break;
-			} else if (!init_response) {
-				// Initialization success
-				goto card_init_complete;
-			}
-		}
-	}
-
-	// Attempt legacy card init
-	retries = MAX_RETRIES ^ 0xFF;
-	while (++retries) {
-		tfc_send_cmd(TFC_SEND_OP_COND, 0x95, 0);
-		uint8_t init_response = tfc_read_response(buffer, 1);
-		if (init_response & ~TFC_R1_IDLE) {
-			// Initialization error
-			retries = 0;
-			break;
-		} else if (!init_response) {
-			// Initialization success
-			goto card_init_complete;
-		}
-	}
-
-	set_detail_code(3);
-card_init_failed:
-	// Power off card
-	outportb(IO_NILE_POW_CNT, 0);
-	return card_status;
-
-card_init_complete:
-	// set block size to 512
-	tfc_send_cmd(TFC_SET_BLOCKLEN, 0x95, 512);
-	if (tfc_read_response(buffer, 1)) {
-		set_detail_code(4);
-		return card_status;
-	}
-
-card_init_complete_hc:
-	outportb(IO_NILE_POW_CNT, powcnt | NILE_POW_CLOCK);
-	outportw(IO_NILE_SPI_CNT, NILE_SPI_DEV_TF | NILE_SPI_25MHZ | NILE_SPI_CS_HIGH);
-	card_status = 0;
-	return card_status;
-}
-
 /* Wait until the TF card is finished (responds 0xFF...) */
-static uint8_t disk_wait_busy(uint8_t resp) {
+static uint8_t tfc_wait_until_ready(uint8_t resp) {
 	uint16_t timeout = 0;
 #ifdef __OPTIMIZE_SIZE__
 	// smaller but slower code variant
 	uint16_t resp_busy[24];
 	while (--timeout) {
 		// wait for 0xFFFF to signify end of busy time
-		if (!nile_spi_rx(&resp_busy, 48, NILE_SPI_MODE_READ))
+		if (!nile_spi_rx_copy(&resp_busy, 48, NILE_SPI_MODE_READ))
 			return 0xFF;
 		if (resp_busy[23] == 0xFFFF)
 			break;
@@ -308,13 +156,202 @@ static uint8_t disk_wait_busy(uint8_t resp) {
 #endif
 }
 
-static uint8_t disk_wait_r1b(void) {
+static bool tfc_cs_high(void) {
+	outportw(IO_NILE_SPI_CNT, inportw(IO_NILE_SPI_CNT) & ~NILE_SPI_CS);
+	if (!nile_spi_rx(1, NILE_SPI_MODE_READ))
+		return false;
+	return true;
+}
+
+static bool tfc_cs_low(void) {
+	outportw(IO_NILE_SPI_CNT, inportw(IO_NILE_SPI_CNT) | NILE_SPI_CS);
+	if (!nile_spi_rx(1, NILE_SPI_MODE_READ))
+		return false;
+	if (tfc_wait_until_ready(0x00))
+		return false;
+	return true;
+}
+
+static uint8_t tfc_read_response_r1b(void) {
 	uint8_t resp = 0xFF;
 
-	if (!nile_spi_rx(&resp, 1, NILE_SPI_MODE_WAIT_READ) || resp)
+	if (!nile_spi_rx_copy(&resp, 1, NILE_SPI_MODE_WAIT_READ) || resp)
 		return resp;
 
-	return disk_wait_busy(resp);
+	return tfc_wait_until_ready(resp);
+}
+
+static uint8_t tfc_read_response(uint8_t *buffer, uint16_t size) {
+	buffer[0] = 0xFF;
+	nile_spi_rx_copy(buffer, size + 8, NILE_SPI_MODE_WAIT_READ);
+	return buffer[0];
+}
+
+static bool tfc_send_cmd(uint8_t cmd, uint8_t crc, uint32_t arg) {
+	uint8_t buffer[14];
+
+	if (cmd & 0x80) {
+		if (!tfc_send_cmd(TFC_APP_PREFIX, 0x95, 0)) {
+			return false;
+		}
+		if (tfc_read_response(buffer, 1) & ~TFC_R1_IDLE) {
+			return false;
+		}
+	}
+
+	_nmemset(buffer, 0xFF, 8);
+
+	if (!tfc_cs_high())
+		return false;
+	if (!tfc_cs_low())
+		return false;
+
+	buffer[8] = cmd & 0x7F;
+	buffer[9] = arg >> 24;
+	buffer[10] = arg >> 16;
+	buffer[11] = arg >> 8;
+	buffer[12] = arg;
+	buffer[13] = crc;
+	return nile_spi_tx(buffer, sizeof(buffer));
+}
+
+DSTATUS disk_status(BYTE pdrv) {
+	return card_status;
+}
+
+#define MAX_RETRIES 200
+
+DSTATUS disk_initialize(BYTE pdrv) {
+	uint8_t retries;
+	uint8_t buffer[16];
+
+	card_hc = false;
+	card_status = STA_NOINIT;
+	nile_spi_timeout_ms = 1000;
+
+	set_detail_code(0);
+	outportw(IO_NILE_SPI_CNT, NILE_SPI_DEV_TF | NILE_SPI_390KHZ | NILE_SPI_CS_HIGH);
+	tfc_cs_high();
+
+	uint8_t powcnt = inportb(IO_NILE_POW_CNT);
+	if (!(powcnt & NILE_POW_TF)) {
+		// Power card on
+		powcnt |= NILE_POW_TF;
+		outportb(IO_NILE_POW_CNT, powcnt);
+		// Wait 250 milliseconds
+		for (uint8_t i = 0; i < 5; i++)
+			ws_busywait(50000);
+	}
+
+	nile_spi_rx(10, NILE_SPI_MODE_READ);
+	tfc_cs_low();
+
+	// Reset card
+	if (tfc_send_cmd(TFC_GO_IDLE_STATE, 0x95, 0) && tfc_read_response(buffer, 1) & ~TFC_R1_IDLE) {
+		// Error/No response
+		set_detail_code(1);
+		goto card_init_failed;
+	}
+
+	// Query interface configuration
+	if (tfc_send_cmd(TFC_SEND_IF_COND, 0x87, 0x000001AA) && !(tfc_read_response(buffer, 5) & ~TFC_R1_IDLE)) {
+		// Check voltage/pattern value match
+		if ((buffer[3] & 0xF) == 0x1 && buffer[4] == 0xAA) {
+			// Attempt high-capacity card init
+			retries = MAX_RETRIES;
+			nile_spi_timeout_ms = 10;
+			while (--retries) {
+				if (tfc_send_cmd(TFC_APP_SEND_OP_COND, 0x95, 1UL << 30)) {
+					uint8_t init_response = tfc_read_response(buffer, 1);
+					if (init_response & ~TFC_R1_IDLE) {
+						// Initialization error
+						retries = 0;
+						break;
+					} else if (!init_response) {
+						// Initialization success
+						break;
+					}
+				}
+				// Card still idle, try again
+			}
+
+			// Card init successful?
+			if (retries) {
+				// Read OCR to check for HC card
+				if (tfc_send_cmd(TFC_READ_OCR, 0x95, 0)) {
+					if (!tfc_read_response(buffer, 5)) {
+						if (buffer[1] & 0x40) {
+							card_hc = true;
+						}
+					}
+				}
+				goto card_init_complete_hc;
+			}
+		} else {
+			// Voltage/pattern value mismatch
+			set_detail_code(2);
+			return card_status;
+		}
+	}
+
+	// Attempt card init
+	retries = MAX_RETRIES;
+	nile_spi_timeout_ms = 10;
+	while (--retries) {
+		if (tfc_send_cmd(TFC_APP_SEND_OP_COND, 0x95, 0)) {
+			uint8_t init_response = tfc_read_response(buffer, 1);
+			if (init_response & ~TFC_R1_IDLE) {
+				// Initialization error
+				retries = 0;
+				break;
+			} else if (!init_response) {
+				// Initialization success
+				goto card_init_complete;
+			}
+		}
+	}
+
+	// Attempt legacy card init
+	retries = MAX_RETRIES;
+	while (--retries) {
+		if (tfc_send_cmd(TFC_SEND_OP_COND, 0x95, 0)) {
+			uint8_t init_response = tfc_read_response(buffer, 1);
+			if (init_response & ~TFC_R1_IDLE) {
+				// Initialization error
+				retries = 0;
+				break;
+			} else if (!init_response) {
+				// Initialization success
+				goto card_init_complete;
+			}
+		}
+	}
+
+	set_detail_code(3);
+card_init_failed:
+	// Power off card
+	outportb(IO_NILE_POW_CNT, 0);
+	outportw(IO_NILE_SPI_CNT, 0);
+	return card_status;
+
+card_init_complete:
+	nile_spi_timeout_ms = 250;
+	if (!card_hc) {
+		// set block size to 512
+		if (tfc_send_cmd(TFC_SET_BLOCKLEN, 0x95, 512)) {
+			if (tfc_read_response(buffer, 1)) {
+				set_detail_code(4);
+				return card_status;
+			}
+		}
+	}
+
+card_init_complete_hc:
+	outportb(IO_NILE_POW_CNT, powcnt | NILE_POW_CLOCK);
+	outportw(IO_NILE_SPI_CNT, NILE_SPI_DEV_TF | NILE_SPI_25MHZ | NILE_SPI_CS_HIGH);
+	tfc_cs_high();
+	card_status = 0;
+	return card_status;
 }
 
 DRESULT disk_read (BYTE pdrv, BYTE __far* buff, LBA_t sector, UINT count) {
@@ -324,25 +361,25 @@ DRESULT disk_read (BYTE pdrv, BYTE __far* buff, LBA_t sector, UINT count) {
 	if (!card_hc)
 		sector <<= 9;
 
-	outportw(IO_NILE_SPI_CNT, NILE_SPI_DEV_TF | NILE_SPI_25MHZ | NILE_SPI_CS_LOW);
+	tfc_cs_low();
 
 #ifdef USE_MULTI_TRANSFER_READS
 	bool multi_transfer = count > 1;
 	if (!tfc_send_cmd(multi_transfer ? TFC_READ_MULTIPLE_BLOCK : TFC_READ_SINGLE_BLOCK, 0x95, sector))
 		goto disk_read_end;
-	if (!nile_spi_rx(resp, 1, NILE_SPI_MODE_WAIT_READ))
+	if (!nile_spi_rx_copy(resp, 1, NILE_SPI_MODE_WAIT_READ))
 		goto disk_read_end;
 	if (resp[0])
 		goto disk_read_end;
 
 	while (count) {
-		if (!nile_spi_rx(resp, 1, NILE_SPI_MODE_WAIT_READ))
+		if (!nile_spi_rx_copy(resp, 1, NILE_SPI_MODE_WAIT_READ))
 			goto disk_read_stop;
 		if (resp[0] != 0xFE)
 			goto disk_read_stop;
-		if (!nile_spi_rx(buff, 512, NILE_SPI_MODE_READ))
+		if (!nile_spi_rx_copy(buff, 512, NILE_SPI_MODE_READ))
 			goto disk_read_stop;
-		if (!nile_spi_rx(resp, 2, NILE_SPI_MODE_READ))
+		if (!nile_spi_rx(2, NILE_SPI_MODE_READ))
 			goto disk_read_stop;
 		buff += 512;
 		count--;
@@ -355,25 +392,25 @@ disk_read_stop:
 		resp[6] = 0xFF; // skip one byte
 		if (!nile_spi_tx(resp, 7))
 			goto disk_read_end;
-		if (disk_wait_r1b())
+		if (tfc_read_response_r1b())
 			goto disk_read_end;
 	}
 #else
 	while (count) {
 		if (!tfc_send_cmd(TFC_READ_SINGLE_BLOCK, 0x95, sector))
 			goto disk_read_end;
-		if (!nile_spi_rx(resp, 1, NILE_SPI_MODE_WAIT_READ))
+		if (!nile_spi_rx_copy(resp, 1, NILE_SPI_MODE_WAIT_READ))
 			goto disk_read_end;
 		if (resp[0])
 			goto disk_read_end;
 
-		if (!nile_spi_rx(resp, 1, NILE_SPI_MODE_WAIT_READ))
+		if (!nile_spi_rx_copy(resp, 1, NILE_SPI_MODE_WAIT_READ))
 			goto disk_read_end;
 		if (resp[0] != 0xFE)
 			goto disk_read_end;
-		if (!nile_spi_rx(buff, 512, NILE_SPI_MODE_READ))
+		if (!nile_spi_rx_copy(buff, 512, NILE_SPI_MODE_READ))
 			goto disk_read_end;
-		if (!nile_spi_rx(resp, 2, NILE_SPI_MODE_READ))
+		if (!nile_spi_rx(2, NILE_SPI_MODE_READ))
 			goto disk_read_end;
 		buff += 512;
 		sector += card_hc ? 1 : 512;
@@ -384,7 +421,7 @@ disk_read_stop:
 	result = RES_OK;
 disk_read_end:
 	nile_spi_wait_busy();
-	outportw(IO_NILE_SPI_CNT, NILE_SPI_DEV_TF | NILE_SPI_25MHZ | NILE_SPI_CS_HIGH);
+	tfc_cs_high();
 	return result;
 }
 
@@ -397,13 +434,13 @@ DRESULT disk_write (BYTE pdrv, const BYTE __far* buff, LBA_t sector, UINT count)
 	if (!card_hc)
 		sector <<= 9;
 
-	outportw(IO_NILE_SPI_CNT, NILE_SPI_DEV_TF | NILE_SPI_25MHZ | NILE_SPI_CS_LOW);
+	tfc_cs_low();
 
 #ifdef USE_MULTI_TRANSFER_WRITES
 	bool multi_transfer = count > 1;
 	if (!tfc_send_cmd(multi_transfer ? TFC_WRITE_MULTIPLE_BLOCK : TFC_WRITE_BLOCK, 0x95, sector))
 		goto disk_read_end;
-	if (!nile_spi_rx(resp, 1, NILE_SPI_MODE_WAIT_READ))
+	if (!nile_spi_rx_copy(resp, 1, NILE_SPI_MODE_WAIT_READ))
 		goto disk_read_end;
 	if (resp[0])
 		goto disk_read_end;
@@ -417,7 +454,7 @@ DRESULT disk_write (BYTE pdrv, const BYTE __far* buff, LBA_t sector, UINT count)
 			goto disk_read_stop;
 		if (!nile_spi_tx(resp, 2))
 			goto disk_read_stop;
-		if (!nile_spi_rx(resp, 1, NILE_SPI_MODE_WAIT_READ))
+		if (!nile_spi_rx_copy(resp, 1, NILE_SPI_MODE_WAIT_READ))
 			goto disk_read_stop;
 		// TODO: error handling?
 		buff += 512;
@@ -430,14 +467,14 @@ disk_read_stop:
 		resp[1] = 0xFD;
 		resp[2] = 0xFF;
 		nile_spi_tx(resp, 3);
-		if (disk_wait_busy(0x00))
+		if (tfc_wait_until_ready(0x00))
 			goto disk_read_end;
 	}
 #else
 	while (count) {
 		if (!tfc_send_cmd(TFC_WRITE_BLOCK, 0x95, sector))
 			goto disk_read_end;
-		if (!nile_spi_rx(resp, 1, NILE_SPI_MODE_WAIT_READ))
+		if (!nile_spi_rx_copy(resp, 1, NILE_SPI_MODE_WAIT_READ))
 			goto disk_read_end;
 		if (resp[0])
 			goto disk_read_end;
@@ -450,7 +487,7 @@ disk_read_stop:
 			goto disk_read_end;
 		if (!nile_spi_tx(resp, 2))
 			goto disk_read_end;
-		if (!nile_spi_rx(resp, 1, NILE_SPI_MODE_WAIT_READ))
+		if (!nile_spi_rx_copy(resp, 1, NILE_SPI_MODE_WAIT_READ))
 			goto disk_read_end;
 		// TODO: error handling?
 		buff += 512;
@@ -462,7 +499,7 @@ disk_read_stop:
 	result = RES_OK;
 disk_read_end:
 	nile_spi_wait_busy();
-	outportw(IO_NILE_SPI_CNT, NILE_SPI_DEV_TF | NILE_SPI_25MHZ | NILE_SPI_CS_HIGH);
+	tfc_cs_high();
 	return result;
 }
 

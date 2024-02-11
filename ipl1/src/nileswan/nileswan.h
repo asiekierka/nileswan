@@ -57,9 +57,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+extern uint16_t nile_spi_timeout_ms;
+
 bool nile_spi_wait_busy(void);
 bool nile_spi_tx(const void __far* buf, uint16_t size);
-bool nile_spi_rx(void __far* buf, uint16_t size, uint16_t mode);
+bool nile_spi_rx(uint16_t size, uint16_t mode);
+bool nile_spi_rx_flip(uint16_t size, uint16_t mode);
+bool nile_spi_rx_copy(void __far* buf, uint16_t size, uint16_t mode);
 
 #endif
 
