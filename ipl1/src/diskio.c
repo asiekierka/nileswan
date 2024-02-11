@@ -184,7 +184,7 @@ static uint8_t tfc_read_response_r1b(void) {
 
 static uint8_t tfc_read_response(uint8_t *buffer, uint16_t size) {
 	buffer[0] = 0xFF;
-	nile_spi_rx_copy(buffer, size + 6, NILE_SPI_MODE_WAIT_READ);
+	nile_spi_rx_copy(buffer, size + 2, NILE_SPI_MODE_WAIT_READ);
 	return buffer[0];
 }
 
@@ -222,9 +222,13 @@ DSTATUS disk_status(BYTE pdrv) {
 
 #define MAX_RETRIES 200
 
+#define SCREEN ((uint16_t*) (0x3800 + (13 * 32 * 2)))
+#define SCV(c) (((uint8_t) (c)) | 0x100)
+
 DSTATUS disk_initialize(BYTE pdrv) {
 	uint8_t retries;
 	uint8_t buffer[16];
+	bool cond1, cond2;
 
 	nile_ipl_data->card_state = NILE_CARD_NOT_INITIALIZED;
 	nile_spi_timeout_ms = 1000;
@@ -232,9 +236,11 @@ DSTATUS disk_initialize(BYTE pdrv) {
 	set_detail_code(0);
 	outportw(IO_NILE_SPI_CNT, NILE_SPI_DEV_TF | NILE_SPI_390KHZ | NILE_SPI_CS_HIGH);
 	tfc_cs_high();
+	SCREEN[32] = SCV('@');
 
 	uint8_t powcnt = inportb(IO_NILE_POW_CNT);
 	if (!(powcnt & NILE_POW_TF)) {
+		SCREEN[33] = SCV('p');
 		// Power card on
 		powcnt |= NILE_POW_TF;
 		outportb(IO_NILE_POW_CNT, powcnt);
@@ -246,7 +252,9 @@ DSTATUS disk_initialize(BYTE pdrv) {
 	nile_spi_rx(10, NILE_SPI_MODE_READ);
 
 	// Reset card
-	if (!tfc_send_cmd(TFC_GO_IDLE_STATE, 0x95, 0) || tfc_read_response(buffer, 1) & ~TFC_R1_IDLE) {
+	if (!(cond1 = tfc_send_cmd(TFC_GO_IDLE_STATE, 0x95, 0)) || (cond2 = (tfc_read_response(buffer, 1) & ~TFC_R1_IDLE))) {
+		SCREEN[34] = cond1 ? 'Y' : 'N';
+		SCREEN[35] = cond2 ? 'Y' : 'N';
 		// Error/No response
 		set_detail_code(1);
 		goto card_init_failed;
@@ -254,20 +262,25 @@ DSTATUS disk_initialize(BYTE pdrv) {
 
 	// Query interface configuration
 	if (tfc_send_cmd(TFC_SEND_IF_COND, 0x87, 0x000001AA) && !(tfc_read_response(buffer, 5) & ~TFC_R1_IDLE)) {
+		SCREEN[36] = SCV('I');
 		// Check voltage/pattern value match
 		if ((buffer[3] & 0xF) == 0x1 && buffer[4] == 0xAA) {
 			// Attempt high-capacity card init
 			retries = MAX_RETRIES;
 			nile_spi_timeout_ms = 10;
 			while (--retries) {
+				SCREEN[36]++;
 				if (tfc_send_cmd(TFC_APP_SEND_OP_COND, 0x95, 1UL << 30)) {
+					SCREEN[37] = SCV('O');
 					uint8_t init_response = tfc_read_response(buffer, 1);
 					if (init_response & ~TFC_R1_IDLE) {
+						SCREEN[38] = SCV('r');
 						// Initialization error
 						retries = 0;
 						break;
 					} else if (!init_response) {
 						// Initialization success
+						SCREEN[39] = SCV('R');
 						break;
 					}
 				}
@@ -276,9 +289,12 @@ DSTATUS disk_initialize(BYTE pdrv) {
 
 			// Card init successful?
 			if (retries) {
+				SCREEN[40] = SCV('0');
 				// Read OCR to check for HC card
 				if (tfc_send_cmd(TFC_READ_OCR, 0x95, 0)) {
+					SCREEN[41] = SCV('1');
 					if (!tfc_read_response(buffer, 5)) {
+						SCREEN[42] = SCV('2');
 						if (buffer[1] & 0x40) {
 							nile_ipl_data->card_state = NILE_CARD_BLOCK_ADDRESSING;
 						}
@@ -287,6 +303,7 @@ DSTATUS disk_initialize(BYTE pdrv) {
 				goto card_init_complete_hc;
 			}
 		} else {
+			SCREEN[43] = SCV('3');
 			// Voltage/pattern value mismatch
 			set_detail_code(2);
 			goto card_init_failed;
@@ -296,10 +313,13 @@ DSTATUS disk_initialize(BYTE pdrv) {
 	// Attempt card init
 	retries = MAX_RETRIES;
 	nile_spi_timeout_ms = 10;
+	SCREEN[44] = SCV('@');
 	while (--retries) {
+		SCREEN[44]++;
 		if (tfc_send_cmd(TFC_APP_SEND_OP_COND, 0x95, 0)) {
 			uint8_t init_response = tfc_read_response(buffer, 1);
 			if (init_response & ~TFC_R1_IDLE) {
+				SCREEN[45] = SCV('4');
 				// Initialization error
 				retries = 0;
 				break;
@@ -312,10 +332,13 @@ DSTATUS disk_initialize(BYTE pdrv) {
 
 	// Attempt legacy card init
 	retries = MAX_RETRIES;
+	SCREEN[46] = SCV('@');
 	while (--retries) {
+		SCREEN[46]++;
 		if (tfc_send_cmd(TFC_SEND_OP_COND, 0x95, 0)) {
 			uint8_t init_response = tfc_read_response(buffer, 1);
 			if (init_response & ~TFC_R1_IDLE) {
+				SCREEN[47] = SCV('5');
 				// Initialization error
 				retries = 0;
 				break;
