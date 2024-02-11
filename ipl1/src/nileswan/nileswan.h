@@ -65,6 +65,24 @@ bool nile_spi_rx(uint16_t size, uint16_t mode);
 bool nile_spi_rx_flip(uint16_t size, uint16_t mode);
 bool nile_spi_rx_copy(void __far* buf, uint16_t size, uint16_t mode);
 
+typedef struct {
+    struct {
+        uint16_t ax, bx, cx, dx;
+        uint16_t sp, bp, si, di;
+        uint16_t ds, es, ss, flags;
+    } regs;
+    uint8_t card_state;
+    uint8_t pad[7];
+} nile_ipl_data_t;
+
+typedef enum {
+    NILE_CARD_NOT_INITIALIZED,
+    NILE_CARD_BYTE_ADDRESSING,
+    NILE_CARD_BLOCK_ADDRESSING
+} nile_ipl_card_state;
+
+#define nile_ipl_data ((volatile nile_ipl_data_t*) 0x0040)
+
 #endif
 
 #endif /* __NILESWAN_H__ */
