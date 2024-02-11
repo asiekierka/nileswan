@@ -317,7 +317,7 @@ DRESULT disk_read (BYTE pdrv, BYTE __far* buff, LBA_t sector, UINT count) {
 
 #ifdef USE_MULTI_TRANSFER_READS
 	bool multi_transfer = count > 1;
-	if (nile_tf_command(multi_transfer ? TFC_READ_MULTIPLE_BLOCK : TFC_READ_SINGLE_BLOCK, sector, 0x95, resp, 1)) {
+	if (nile_tf_command(multi_transfer ? TFC_READ_MULTIPLE_BLOCK : TFC_READ_SINGLE_BLOCK, sector, 0x95, resp, 0)) {
 		set_detail_code(0x10);
 		goto disk_read_end;
 	}
@@ -359,7 +359,7 @@ disk_read_stop:
 	}
 #else
 	while (count) {
-		if (nile_tf_command(TFC_READ_SINGLE_BLOCK, sector, 0x95, resp, 1)) {
+		if (nile_tf_command(TFC_READ_SINGLE_BLOCK, sector, 0x95, resp, 0)) {
 			set_detail_code(0x10);
 			goto disk_read_end;
 		}
