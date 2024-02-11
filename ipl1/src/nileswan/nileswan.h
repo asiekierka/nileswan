@@ -75,11 +75,12 @@ typedef struct {
     uint8_t pad[7];
 } nile_ipl_data_t;
 
-typedef enum {
-    NILE_CARD_NOT_INITIALIZED,
-    NILE_CARD_BYTE_ADDRESSING,
-    NILE_CARD_BLOCK_ADDRESSING
-} nile_ipl_card_state;
+#define NILE_CARD_TYPE_NONE        0x00
+#define NILE_CARD_TYPE_MMC         0x01
+#define NILE_CARD_TYPE_TF1         0x02
+#define NILE_CARD_TYPE_TF2         0x03
+#define NILE_CARD_TYPE_MASK        0x03
+#define NILE_CARD_BLOCK_ADDRESSING 0x04
 
 #define nile_ipl_data ((volatile nile_ipl_data_t*) 0x0040)
 

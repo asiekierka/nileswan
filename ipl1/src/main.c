@@ -148,7 +148,7 @@ void run_selftest(void) {
 const uint8_t swan_logo_map[] = {0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8A, 0x8B};
 
 void main(void) {
-	nile_ipl_data->card_state = NILE_CARD_NOT_INITIALIZED;
+	nile_ipl_data->card_state = 0;
 
     ws_display_set_shade_lut(SHADE_LUT_DEFAULT);
     outportw(IO_SCR_PAL_0, MONO_PAL_COLORS(0, 7, 2, 5));
