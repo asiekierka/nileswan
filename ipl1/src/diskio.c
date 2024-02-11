@@ -183,12 +183,12 @@ static uint8_t tfc_read_response_r1b(void) {
 
 static uint8_t tfc_read_response(uint8_t *buffer, uint16_t size) {
 	buffer[0] = 0xFF;
-	nile_spi_rx_copy(buffer, size + 8, NILE_SPI_MODE_WAIT_READ);
+	nile_spi_rx_copy(buffer, size + 6, NILE_SPI_MODE_WAIT_READ);
 	return buffer[0];
 }
 
 static bool tfc_send_cmd(uint8_t cmd, uint8_t crc, uint32_t arg) {
-	uint8_t buffer[14];
+	uint8_t buffer[6 + 6];
 
 	if (cmd & 0x80) {
 		if (!tfc_send_cmd(TFC_APP_PREFIX, 0x95, 0)) {
@@ -199,19 +199,19 @@ static bool tfc_send_cmd(uint8_t cmd, uint8_t crc, uint32_t arg) {
 		}
 	}
 
-	_nmemset(buffer, 0xFF, 8);
+	_nmemset(buffer, 0xFF, 6);
 
 	if (!tfc_cs_high())
 		return false;
 	if (!tfc_cs_low())
 		return false;
 
-	buffer[8] = cmd & 0x7F;
-	buffer[9] = arg >> 24;
-	buffer[10] = arg >> 16;
-	buffer[11] = arg >> 8;
-	buffer[12] = arg;
-	buffer[13] = crc;
+	buffer[6] = cmd & 0x7F;
+	buffer[7] = arg >> 24;
+	buffer[8] = arg >> 16;
+	buffer[9] = arg >> 8;
+	buffer[10] = arg;
+	buffer[11] = crc;
 	return nile_spi_tx(buffer, sizeof(buffer));
 }
 
@@ -244,7 +244,6 @@ DSTATUS disk_initialize(BYTE pdrv) {
 	}
 
 	nile_spi_rx(10, NILE_SPI_MODE_READ);
-	tfc_cs_low();
 
 	// Reset card
 	if (tfc_send_cmd(TFC_GO_IDLE_STATE, 0x95, 0) && tfc_read_response(buffer, 1) & ~TFC_R1_IDLE) {
