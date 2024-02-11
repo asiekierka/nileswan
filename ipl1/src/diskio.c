@@ -327,7 +327,7 @@ DRESULT disk_read (BYTE pdrv, BYTE __far* buff, LBA_t sector, UINT count) {
 			goto disk_read_stop;
 		}
 		if (resp[0] != 0xFE) {
-			set_detail_code(0x12);
+			set_detail_code(0xE0 | resp[0]);
 			goto disk_read_stop;
 		}
 		if (!nile_spi_rx_copy(buff, 512, NILE_SPI_MODE_READ)) {
@@ -368,7 +368,7 @@ disk_read_stop:
 			goto disk_read_end;
 		}
 		if (resp[0] != 0xFE) {
-			set_detail_code(0x12);
+			set_detail_code(0xE0 | resp[0]);
 			goto disk_read_end;
 		}
 		if (!nile_spi_rx_copy(buff, 512, NILE_SPI_MODE_READ)) {
