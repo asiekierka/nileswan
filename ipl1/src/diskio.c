@@ -107,7 +107,7 @@ uint8_t diskio_detail_code;
 /* Wait until the TF card is finished */
 /* Returns resp on success, 0xFF on failure */
 static uint8_t nile_tf_wait_ready(uint8_t resp) {
-	uint16_t timeout = 0;
+	uint32_t timeout = 1500000;
 	uint8_t resp_busy[1];
 	while (--timeout) {
 		// wait for 0xFF to signify end of busy time
@@ -291,7 +291,7 @@ card_init_failed:
 	return STA_NOINIT;
 
 card_init_complete:
-	nile_spi_timeout_ms = 250;
+	nile_spi_timeout_ms = 100;
 	if (!(nile_ipl_data->card_state & NILE_CARD_BLOCK_ADDRESSING)) {
 		// set block size to 512
 		if (nile_tf_command(TFC_SET_BLOCKLEN, 512, 0x95, buffer, 1)) {
@@ -301,6 +301,7 @@ card_init_complete:
 	}
 
 card_init_complete_hc:
+	nile_spi_timeout_ms = 100;
 	nile_tf_cs_high();
 	outportb(IO_NILE_POW_CNT, powcnt | NILE_POW_CLOCK);
 	outportw(IO_NILE_SPI_CNT, NILE_SPI_DEV_TF | NILE_SPI_25MHZ | NILE_SPI_CS_HIGH);
